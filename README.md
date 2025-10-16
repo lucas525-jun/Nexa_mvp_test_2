@@ -266,10 +266,69 @@ Mark order as completed. **Requires valid ADL with GPS and timestamp.**
 
 Retrieve full order with assigned master and ADL media.
 
+**Example Request:**
+```bash
+curl http://localhost:8000/api/v1/orders/1
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": 1,
+  "title": "Fix plumbing issue",
+  "description": "Kitchen sink is leaking",
+  "status": "completed",
+  "customer": {
+    "name": "Jane Doe",
+    "phone": "+1234567890"
+  },
+  "geo": {
+    "lat": 40.7128,
+    "lng": -74.0060
+  },
+  "assignedMasterId": 2,
+  "assignedMaster": {
+    "id": 2,
+    "name": "Maria Garcia",
+    "rating": 4.8,
+    "isAvailable": true,
+    "geo": {
+      "lat": 40.7589,
+      "lng": -73.9851
+    },
+    "currentLoad": 3
+  },
+  "adlMedia": [
+    {
+      "id": 1,
+      "orderId": 1,
+      "type": "photo",
+      "url": "/uploads/order_1_photo.jpg",
+      "gps": {
+        "lat": 40.7128,
+        "lng": -74.0060
+      },
+      "capturedAt": "2025-10-16T14:45:00Z",
+      "meta": {
+        "device": "iPhone 14",
+        "fileSize": "2.5MB"
+      }
+    }
+  ],
+  "createdAt": "2025-10-16T14:30:00",
+  "updatedAt": "2025-10-16T14:50:00"
+}
+```
+
 ### 6. Get All Masters
 **GET** `/api/v1/masters`
 
 List all masters with availability and current load.
+
+**Example Request:**
+```bash
+curl http://localhost:8000/api/v1/masters
+```
 
 **Response (200 OK):**
 ```json
@@ -285,7 +344,17 @@ List all masters with availability and current load.
     },
     "currentLoad": 2
   },
-  ...
+  {
+    "id": 2,
+    "name": "Maria Garcia",
+    "rating": 4.8,
+    "isAvailable": true,
+    "geo": {
+      "lat": 40.7589,
+      "lng": -73.9851
+    },
+    "currentLoad": 1
+  }
 ]
 ```
 
@@ -388,13 +457,178 @@ def find_best_master(order_lat, order_lng):
     return best_master_id
 ```
 
-## ADL Validation
+## ADL Validation & Enforcement
 
-Before an order can be completed:
+Before an order can be completed, the system enforces strict ADL requirements:
 - ✅ At least one ADL media must be attached
 - ✅ ADL must have valid GPS coordinates (lat, lng)
 - ✅ ADL must have valid timestamp (capturedAt in ISO format)
 - ❌ Otherwise, completion fails with 400 error
+
+### ADL Enforcement Examples
+
+#### Scenario 1: Complete Order Without ADL (FAILS)
+
+```bash
+# Create and assign order
+curl -X POST http://localhost:8000/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Test Order", "customer": {"name": "John"}, "geo": {"lat": 40.7128, "lng": -74.0060}}'
+# Returns: {"id": 1, ...}
+
+curl -X POST http://localhost:8000/api/v1/orders/1/assign
+# Returns: {"id": 1, "assignedMasterId": 2, ...}
+
+# Try to complete without ADL
+curl -X POST http://localhost:8000/api/v1/orders/1/complete
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "detail": "Cannot complete order: valid ADL media with GPS coordinates and timestamp is required"
+}
+```
+
+#### Scenario 2: Attach ADL Missing GPS Coordinates (FAILS)
+
+```bash
+# Try to attach ADL without GPS
+curl -X POST http://localhost:8000/api/v1/orders/1/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/photo.jpg",
+    "capturedAt": "2025-10-16T14:45:00Z"
+  }'
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "detail": "GPS coordinates (gps_lat, gps_lng) are required"
+}
+```
+
+#### Scenario 3: Attach ADL Missing Latitude Only (FAILS)
+
+```bash
+# Try to attach ADL with incomplete GPS (missing lat)
+curl -X POST http://localhost:8000/api/v1/orders/1/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/photo.jpg",
+    "gps": {"lng": -74.0060},
+    "capturedAt": "2025-10-16T14:45:00Z"
+  }'
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "detail": "GPS coordinates (gps_lat, gps_lng) are required"
+}
+```
+
+#### Scenario 4: Attach ADL Missing Longitude Only (FAILS)
+
+```bash
+# Try to attach ADL with incomplete GPS (missing lng)
+curl -X POST http://localhost:8000/api/v1/orders/1/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/photo.jpg",
+    "gps": {"lat": 40.7128},
+    "capturedAt": "2025-10-16T14:45:00Z"
+  }'
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "detail": "GPS coordinates (gps_lat, gps_lng) are required"
+}
+```
+
+#### Scenario 5: Attach ADL Missing Timestamp (FAILS)
+
+```bash
+# Try to attach ADL without capturedAt
+curl -X POST http://localhost:8000/api/v1/orders/1/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/photo.jpg",
+    "gps": {"lat": 40.7128, "lng": -74.0060}
+  }'
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "detail": "Timestamp (captured_at) is required in ISO format"
+}
+```
+
+#### Scenario 6: Complete Order With Valid ADL (SUCCESS)
+
+```bash
+# Attach ADL with all required fields
+curl -X POST http://localhost:8000/api/v1/orders/1/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/order_1_photo.jpg",
+    "gps": {"lat": 40.7128, "lng": -74.0060},
+    "capturedAt": "2025-10-16T14:45:00Z",
+    "meta": {"device": "iPhone 14"}
+  }'
+# Returns: {"id": 1, "orderId": 1, ...}
+
+# Now complete the order
+curl -X POST http://localhost:8000/api/v1/orders/1/complete
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": 1,
+  "title": "Test Order",
+  "status": "completed",
+  "customer": {"name": "John"},
+  "geo": {"lat": 40.7128, "lng": -74.0060},
+  "assignedMasterId": 2,
+  "assignedMaster": {...},
+  "adlMedia": [
+    {
+      "id": 1,
+      "orderId": 1,
+      "type": "photo",
+      "url": "/uploads/order_1_photo.jpg",
+      "gps": {"lat": 40.7128, "lng": -74.0060},
+      "capturedAt": "2025-10-16T14:45:00Z",
+      "meta": {"device": "iPhone 14"}
+    }
+  ],
+  "createdAt": "2025-10-16T14:30:00",
+  "updatedAt": "2025-10-16T14:50:00"
+}
+```
+
+### Summary: ADL Requirements
+
+| Field | Required | Validation | Error Message |
+|-------|----------|------------|---------------|
+| `gps.lat` | ✅ Yes | Must be present | "GPS coordinates (gps_lat, gps_lng) are required" |
+| `gps.lng` | ✅ Yes | Must be present | "GPS coordinates (gps_lat, gps_lng) are required" |
+| `capturedAt` | ✅ Yes | Must be valid ISO timestamp | "Timestamp (captured_at) is required in ISO format" |
+| `type` | ✅ Yes | Must be "photo" or "video" | Pydantic validation error |
+| `url` | ✅ Yes | Must be non-empty string | Pydantic validation error |
+| `meta` | ❌ No | Optional dictionary | N/A |
+
+**All three core fields (gps.lat, gps.lng, capturedAt) must be present for order completion to succeed.**
 
 ## Running Tests
 
