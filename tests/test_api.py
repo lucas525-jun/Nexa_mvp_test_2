@@ -24,12 +24,12 @@ def override_get_db():
         db.close()
 
 
-app.dependency_overrides[get_db] = override_get_db
-
-
 @pytest.fixture(scope="function")
 def client():
     """Create test client with fresh database"""
+    # Set up dependency override for this test
+    app.dependency_overrides[get_db] = override_get_db
+
     # Create tables
     Base.metadata.create_all(bind=engine)
 
@@ -53,8 +53,11 @@ def client():
     with TestClient(app) as test_client:
         yield test_client
 
-    # Drop tables after test
+    # Clean up
     Base.metadata.drop_all(bind=engine)
+    # Remove dependency override
+    if get_db in app.dependency_overrides:
+        del app.dependency_overrides[get_db]
 
 
 def test_health_check(client):

@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database.base import Base
 from app.database.config import get_db
 from app.main import app
+from app.models import Master
 
 # Create test database
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test_adl_enforcement.db"
@@ -26,19 +27,13 @@ def override_get_db():
         db.close()
 
 
-app.dependency_overrides[get_db] = override_get_db
-
-client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_database():
-    """Create fresh database for each test"""
-    from app.models.master import Master
+@pytest.fixture(scope="function")
+def client():
+    """Create test client with fresh database"""
+    app.dependency_overrides[get_db] = override_get_db
 
     Base.metadata.create_all(bind=engine)
 
-    # Seed sample masters for testing
     db = TestingSessionLocal()
     try:
         masters = [
@@ -72,11 +67,17 @@ def setup_database():
     finally:
         db.close()
 
-    yield
+    with TestClient(app) as test_client:
+        yield test_client
+
+    # Clean up
     Base.metadata.drop_all(bind=engine)
+    # Remove dependency override
+    if get_db in app.dependency_overrides:
+        del app.dependency_overrides[get_db]
 
 
-def create_and_assign_order():
+def create_and_assign_order(client):
     """Helper function to create and assign an order"""
     # Create order
     response = client.post(
@@ -98,9 +99,9 @@ def create_and_assign_order():
     return order_id
 
 
-def test_complete_order_without_adl():
+def test_complete_order_without_adl(client):
     """Test that completing order without ADL fails"""
-    order_id = create_and_assign_order()
+    order_id = create_and_assign_order(client)
 
     # Try to complete without ADL
     response = client.post(f"/api/v1/orders/{order_id}/complete")
@@ -112,9 +113,9 @@ def test_complete_order_without_adl():
     )
 
 
-def test_attach_adl_missing_gps_coordinates():
+def test_attach_adl_missing_gps_coordinates(client):
     """Test that attaching ADL without GPS coordinates fails - Pydantic validates at schema level"""
-    order_id = create_and_assign_order()
+    order_id = create_and_assign_order(client)
 
     # Try to attach ADL without GPS - Pydantic validation raises error before reaching service layer
     # This proves the system enforces GPS requirements
@@ -132,9 +133,9 @@ def test_attach_adl_missing_gps_coordinates():
     assert "gps" in str(exc_info.value).lower() or "field required" in str(exc_info.value).lower()
 
 
-def test_attach_adl_missing_latitude():
+def test_attach_adl_missing_latitude(client):
     """Test that attaching ADL without latitude fails"""
-    order_id = create_and_assign_order()
+    order_id = create_and_assign_order(client)
 
     # Try to attach ADL with only longitude
     response = client.post(
@@ -151,9 +152,9 @@ def test_attach_adl_missing_latitude():
     assert "GPS coordinates" in response.json()["detail"]
 
 
-def test_attach_adl_missing_longitude():
+def test_attach_adl_missing_longitude(client):
     """Test that attaching ADL without longitude fails"""
-    order_id = create_and_assign_order()
+    order_id = create_and_assign_order(client)
 
     # Try to attach ADL with only latitude
     response = client.post(
@@ -170,9 +171,9 @@ def test_attach_adl_missing_longitude():
     assert "GPS coordinates" in response.json()["detail"]
 
 
-def test_attach_adl_missing_timestamp():
+def test_attach_adl_missing_timestamp(client):
     """Test that attaching ADL without capturedAt fails - Pydantic validates at schema level"""
-    order_id = create_and_assign_order()
+    order_id = create_and_assign_order(client)
 
     # Try to attach ADL without timestamp - Pydantic validation raises error before reaching service layer
     # This proves the system enforces timestamp requirements
@@ -193,9 +194,9 @@ def test_attach_adl_missing_timestamp():
     )
 
 
-def test_complete_order_with_valid_adl():
+def test_complete_order_with_valid_adl(client):
     """Test that completing order with valid ADL succeeds"""
-    order_id = create_and_assign_order()
+    order_id = create_and_assign_order(client)
 
     # Attach valid ADL
     response = client.post(
@@ -216,9 +217,9 @@ def test_complete_order_with_valid_adl():
     assert response.json()["status"] == "completed"
 
 
-def test_complete_order_with_partial_gps_in_adl():
+def test_complete_order_with_partial_gps_in_adl(client):
     """Test that order cannot be completed if ADL has partial GPS (e.g., missing lat or lng)"""
-    order_id = create_and_assign_order()
+    order_id = create_and_assign_order(client)
 
     # Since attach_adl validates GPS on creation, we need to test the completion logic
     # This test confirms that has_valid_adl() correctly validates all required fields
@@ -241,7 +242,7 @@ def test_complete_order_with_partial_gps_in_adl():
     assert response.json()["status"] == "completed"
 
 
-def test_adl_enforcement_full_workflow():
+def test_adl_enforcement_full_workflow(client):
     """Test complete workflow demonstrating ADL enforcement"""
     # 1. Create order
     response = client.post(
