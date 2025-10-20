@@ -117,9 +117,127 @@ The API will be available at:
 ### Database Initialization
 
 The application automatically:
-1. Creates SQLite database (`nexa_nexa-master.db`) on startup
+1. Creates SQLite database (`nexa_test2.db`) on startup
 2. Creates all required tables
 3. Seeds 5 sample masters with different locations and ratings
+
+## Quick Demo - Complete Workflow
+
+This section demonstrates the full workflow with **both successful and failing scenarios** to showcase ADL enforcement.
+
+### Success Path (Full Workflow)
+
+```bash
+# 1. Create an order
+curl -X POST http://localhost:8000/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Fix plumbing issue",
+    "description": "Kitchen sink is leaking",
+    "customer": {"name": "Jane Doe", "phone": "+1234567890"},
+    "geo": {"lat": 40.7128, "lng": -74.0060}
+  }'
+# Response: {"id": 1, "status": "new", ...}
+
+# 2. Assign best available master (automatic selection)
+curl -X POST http://localhost:8000/api/v1/orders/1/assign
+# Response: {"id": 1, "status": "assigned", "assignedMasterId": 2, ...}
+
+# 3. Attach ADL media with GPS and timestamp
+curl -X POST http://localhost:8000/api/v1/orders/1/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/order_1_photo.jpg",
+    "gps": {"lat": 40.7128, "lng": -74.0060},
+    "capturedAt": "2025-10-20T14:45:00Z",
+    "meta": {"device": "iPhone 14"}
+  }'
+# Response: {"id": 1, "orderId": 1, "type": "photo", ...}
+
+# 4. Complete the order (requires valid ADL)
+curl -X POST http://localhost:8000/api/v1/orders/1/complete
+# Response: {"id": 1, "status": "completed", ...}
+
+# 5. View all masters with their current load
+curl http://localhost:8000/api/v1/masters
+# Response: [{"id": 1, "name": "John Smith", "currentLoad": 0, ...}, ...]
+```
+
+### Failure Scenarios - ADL Enforcement
+
+#### ❌ Scenario 1: Complete Order Without ADL
+
+```bash
+# Create and assign order
+curl -X POST http://localhost:8000/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Test", "geo": {"lat": 40.7128, "lng": -74.0060}}'
+# Response: {"id": 2, "status": "new", ...}
+
+curl -X POST http://localhost:8000/api/v1/orders/2/assign
+# Response: {"id": 2, "status": "assigned", ...}
+
+# Try to complete WITHOUT attaching ADL - FAILS
+curl -X POST http://localhost:8000/api/v1/orders/2/complete
+# Response: 400 Bad Request
+# {"detail": "Cannot complete order: valid ADL media with GPS coordinates and timestamp is required"}
+```
+
+#### ❌ Scenario 2: ADL Missing GPS Latitude
+
+```bash
+curl -X POST http://localhost:8000/api/v1/orders/2/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/photo.jpg",
+    "gps": {"lng": -74.0060},
+    "capturedAt": "2025-10-20T14:45:00Z"
+  }'
+# Response: 400 Bad Request
+# {"detail": "GPS coordinates (gps_lat, gps_lng) are required"}
+```
+
+#### ❌ Scenario 3: ADL Missing GPS Longitude
+
+```bash
+curl -X POST http://localhost:8000/api/v1/orders/2/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/photo.jpg",
+    "gps": {"lat": 40.7128},
+    "capturedAt": "2025-10-20T14:45:00Z"
+  }'
+# Response: 400 Bad Request
+# {"detail": "GPS coordinates (gps_lat, gps_lng) are required"}
+```
+
+#### ❌ Scenario 4: ADL Missing Timestamp
+
+```bash
+curl -X POST http://localhost:8000/api/v1/orders/2/adl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "photo",
+    "url": "/uploads/photo.jpg",
+    "gps": {"lat": 40.7128, "lng": -74.0060}
+  }'
+# Response: 400 Bad Request
+# {"detail": "Timestamp (captured_at) is required in ISO format"}
+```
+
+### ADL Requirements Summary
+
+| Field | Required | Validation | Error (400) |
+|-------|----------|------------|-------------|
+| `gps.lat` | ✅ Yes | Must be present | "GPS coordinates (gps_lat, gps_lng) are required" |
+| `gps.lng` | ✅ Yes | Must be present | "GPS coordinates (gps_lat, gps_lng) are required" |
+| `capturedAt` | ✅ Yes | ISO timestamp | "Timestamp (captured_at) is required in ISO format" |
+| `type` | ✅ Yes | "photo" or "video" | Pydantic validation error |
+| `url` | ✅ Yes | Non-empty string | Pydantic validation error |
+| `meta` | ❌ No | Optional dictionary | N/A |
 
 ## API Endpoints
 
@@ -678,6 +796,34 @@ pytest tests/ -v --cov=app --cov-report=term-missing
 4. **Haversine Distance**: Accurate geographic distance without external APIs
 5. **Strict ADL Validation**: Ensures data integrity before order completion
 6. **Sample Data Seeding**: Enables immediate testing without manual setup
+
+## Security
+
+### Current State
+This MVP is designed for **technical validation and testing purposes**. The following security considerations apply:
+
+- **No Authentication**: The API is currently open. For production, implement JWT-based authentication or OAuth 2.0.
+- **CORS Enabled**: All origins are allowed (`allow_origins=["*"]`). Restrict this to specific domains in production.
+- **No Rate Limiting**: Implement rate limiting to prevent abuse in production environments.
+- **Environment Variables**: Use `.env` files for configuration (already in `.gitignore`). Never commit secrets.
+
+### Best Practices for Development
+
+1. **Secrets Management**: Never commit API keys, tokens, or credentials to Git. Use environment variables and `.env` files.
+2. **Pre-commit Hooks**: The project includes `detect-private-key` hook to prevent accidental commits of secrets.
+3. **CI/CD Secrets**: GitHub Actions secrets are properly used for `CODECOV_TOKEN` (see `.github/workflows/ci.yml`).
+4. **Database**: SQLite database files (`*.db`) are excluded in `.gitignore`.
+
+### Production Checklist (Future)
+
+When deploying to production:
+- [ ] Add authentication and authorization (JWT, OAuth 2.0)
+- [ ] Restrict CORS to specific allowed origins
+- [ ] Implement rate limiting and request throttling
+- [ ] Use HTTPS for all endpoints
+- [ ] Add input sanitization and validation
+- [ ] Implement audit logging for sensitive operations
+- [ ] Use environment-based configuration with secrets management (AWS Secrets Manager, HashiCorp Vault, etc.)
 
 ## Future Enhancements
 
